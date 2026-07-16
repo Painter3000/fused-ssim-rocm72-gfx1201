@@ -1,2 +1,5 @@
 build/
 fused_ssim.egg-info/
+/build/
+/*.egg-info/
+/ssim.hip
