@@ -1,5 +1,6 @@
+#include "hip/hip_runtime.h"
 #include <torch/extension.h>
-#include <cooperative_groups.h>
+#include <hip/hip_cooperative_groups.h>
 #include <algorithm>
 #include <iostream>
 #include <c10/cuda/CUDAGuard.h>
