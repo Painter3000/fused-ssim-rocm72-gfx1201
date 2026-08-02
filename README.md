@@ -1,5 +1,14 @@
 # Fully Fused Differentiable SSIM
+<details>
+<summary><strong>ROCm / gfx1201 port note</strong></summary>
 
+- HIP/ROCm port of `simple-knn` (Bernhard Kerbl / Inria), a submodule of 3D Gaussian Splatting.
+- Target: AMD Radeon AI PRO R9700 / RDNA4 / `gfx1201`.
+- Stack: ROCm 7.2, Python 3.12, PyTorch `2.13.0+rocm7.2`.
+- Context: nearest-neighbor helper of the AMD Gaussian Splatting ROCm/gfx1201 stack.
+- License: non-commercial research use only — see [`LICENSE.md`](./LICENSE.md).
+
+</details>
 This repository contains an efficient fully-fused implementation of [SSIM](https://en.wikipedia.org/wiki/Structural_similarity_index_measure) which is differentiable in nature. There are several factors that contribute to an efficient implementation:
 - Convolutions in SSIM are spatially localized leading to fully-fused implementation without touching global memory for intermediate steps.
 - Backpropagation through Gaussian Convolution is simply another Gaussian Convolution itself.
