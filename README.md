@@ -1,59 +1,142 @@
-# Fully Fused Differentiable SSIM
+# fused-ssim — ROCm 7.2 / RDNA4 / gfx1201
+
 <details>
 <summary><strong>ROCm / gfx1201 port note</strong></summary>
 
-- HIP/ROCm port of `fused-ssim`, a fully-fused differentiable SSIM extension for PyTorch.
+- HIP/ROCm port of `fused-ssim` (Rahul Goel), a fully-fused differentiable SSIM.
 - Target: AMD Radeon AI PRO R9700 / RDNA4 / `gfx1201`.
 - Stack: ROCm 7.2, Python 3.12, PyTorch `2.13.0+rocm7.2`.
-- Context: SSIM loss / image-quality helper used by the AMD Gaussian Splatting ROCm/gfx1201 stack.
-- Note: PyTorch may still expose ROCm devices through `cuda` naming and `CUDAExtension` build plumbing.
-- License: check the upstream project and repository license files before redistribution or commercial use.
-
+- Context: SSIM training-loss helper of the AMD Gaussian Splatting ROCm/gfx1201 stack.
+- License: MIT — see [`LICENSE`](./LICENSE).
 </details>
-This repository contains an efficient fully-fused implementation of [SSIM](https://en.wikipedia.org/wiki/Structural_similarity_index_measure) which is differentiable in nature. There are several factors that contribute to an efficient implementation:
-- Convolutions in SSIM are spatially localized leading to fully-fused implementation without touching global memory for intermediate steps.
-- Backpropagation through Gaussian Convolution is simply another Gaussian Convolution itself.
-- Gaussian Convolutions are separable leading to reduced computation.
 
-As per the original SSIM paper, this implementation uses `11x11` sized convolution kernel. The weights for it have been hardcoded and this is another reason for it's speed. This implementation currently only supports **2D images** but with **variable number of channels** and **batch size**.
+---
 
-## PyTorch Installation Instructions
-- You must have CUDA and PyTorch+CUDA installed in you Python 3.X environment. This project has currently been tested with PyTorch `2.3.1+cu118` and CUDA `11.8` on Ubuntu 24.04 LTS.
-- Run `pip install git+https://github.com/rahul-goel/fused-ssim/` or clone the repository and run `pip install .` from the root of this project.
+## What this is
+
+`fused-ssim` is an efficient, fully-fused, **differentiable SSIM** (Structural
+Similarity) implementation. This repository is a HIP/ROCm build of that
+extension, adapted and validated for AMD RDNA4 / `gfx1201` under ROCm 7.2.
+
+It is **not** a new algorithm — it is an AMD enablement port of the original
+implementation, so that SSIM-based training (e.g. the 3D Gaussian Splatting
+pipeline) can run on Radeon RDNA4 hardware.
+
+## What it does
+
+SSIM measures the perceptual similarity between two images. Because it is
+differentiable here, it can be used directly as a training loss.
+
+The "fused" implementation is fast because:
+
+- the SSIM convolutions are computed on-chip in a single fused pass, without
+  writing intermediate results back to global memory,
+- the 11×11 Gaussian kernel is separable and symmetric, cutting the number of
+  operations,
+- backpropagation through a Gaussian convolution is itself a Gaussian
+  convolution, so the backward pass reuses the same fast path.
+
+In 3D Gaussian Splatting it is used as (part of) the image reconstruction loss
+during optimization.
 
 ## Usage
+
 ```python
 import torch
 from fused_ssim import fused_ssim
 
-# predicted_image, gt_image: [BS, CH, H, W]
-# predicted_image is differentiable
-gt_image = torch.rand(2, 3, 1080, 1920)
+# On ROCm, "cuda" maps to the AMD GPU through the HIP runtime.
+device = "cuda"
+
+# images: [B, C, H, W], normalized to [0, 1]
+gt_image = torch.rand(2, 3, 1080, 1920, device=device)
 predicted_image = torch.nn.Parameter(torch.rand_like(gt_image))
+
+# Differentiable w.r.t. the predicted image (the first argument):
 ssim_value = fused_ssim(predicted_image, gt_image)
+
+loss = 1.0 - ssim_value
+loss.backward()
 ```
 
-By default, `same` padding is used. To use `valid` padding which is the kind of padding used by [pytorch-mssim](https://github.com/VainF/pytorch-msssim):
-```python
-ssim_value = fused_ssim(predicted_image, gt_image, padding="valid")
+## Where it fits
+
+```text
+gaussian-splatting (training / rendering pipeline)
+        │
+        ├── diff-gaussian-rasterization   (rendering + gradients)
+        ├── simple-knn                    (initial Gaussian scales)
+        └── fused-ssim                    ← this repo (ROCm/gfx1201 port)
+                └── differentiable SSIM used in the reconstruction loss
 ```
 
-If you don't want to train and use this only for inference, use the following for even faster speed:
-```python
-with torch.no_grad():
-  ssim_value = fused_ssim(predicted_image, gt_image, train=False)
+Companion repositories in the AMD ROCm/gfx1201 stack:
+
+- [`amd-gaussian-splatting-rocm72-gfx1201`](https://github.com/Painter3000/amd-gaussian-splatting-rocm72-gfx1201)
+- [`diff-gaussian-rasterization-rocm72-gfx1201`](https://github.com/Painter3000/diff-gaussian-rasterization-rocm72-gfx1201)
+- [`simple-knn-rocm72-gfx1201`](https://github.com/Painter3000/simple-knn-rocm72-gfx1201)
+
+## Installation
+
+This fork targets a ROCm-enabled PyTorch environment. It does **not** install
+AMD drivers, ROCm, or PyTorch — you need a working ROCm PyTorch environment
+first.
+
+Verify your environment:
+
+```bash
+python - <<'PY'
+import torch
+print("PyTorch:", torch.__version__)
+print("HIP:", torch.version.hip)
+print("GPU available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+    print("Arch:", torch.cuda.get_device_properties(0).gcnArchName)
+PY
 ```
 
-## Constraints
-- Currently, only one of the images is allowed to be differentiable i.e. only the first image can be `nn.Parameter`.
-- Limited to 2D images.
-- Images must be normalized to range `[0, 1]`.
-- Standard `11x11` convolutions supported.
+Build and install from the repository root:
+
+```bash
+export PYTORCH_ROCM_ARCH=gfx1201
+pip install . --no-build-isolation -v
+```
+
+> **Note:** PyTorch keeps the `cuda` device name and the `CUDAExtension` build
+> interface for ROCm/HIP builds. Seeing `cuda` in Python or in `setup.py` does
+> **not** mean NVIDIA CUDA is being used.
+
+## Validated environment
+
+```text
+GPU:        AMD Radeon AI PRO R9700 / gfx1201 / RDNA4
+ROCm:       7.2
+PyTorch:    2.13.0+rocm7.2
+Python:     3.12
+```
 
 ## Performance
-This implementation is 5-8x faster than the previous fastest (to the best of my knowledge) differentiable SSIM implementation [pytorch-mssim](https://github.com/VainF/pytorch-msssim).
 
-<img src="./images/training_time.png" width="45%"> <img src="./images/inference_time.png" width="45%">
+The upstream `fused-ssim` reports roughly a **5–8× speedup** over the previously
+fastest differentiable SSIM implementation,
+[pytorch-msssim](https://github.com/VainF/pytorch-msssim).
 
-## Acknowledgements
-Thanks to [Bernhard](https://snosixtyboo.github.io) for the idea.
+This ROCm/gfx1201 fork preserves that implementation path, so the figure above
+should be read as **upstream context** — not as a measured RDNA4 benchmark —
+unless a separate ROCm/RDNA4 benchmark is documented here.
+
+## Source and attribution
+
+- **Upstream:** [`rahul-goel/fused-ssim`](https://github.com/rahul-goel/fused-ssim)
+  by Rahul Goel — "Lightning fast differentiable SSIM".
+- Also used as a submodule of
+  [`graphdeco-inria/gaussian-splatting`](https://github.com/graphdeco-inria/gaussian-splatting).
+- This repository contains that upstream code with HIP/ROCm adaptations for
+  RDNA4 / `gfx1201`. The SSIM logic and kernels originate upstream; the changes
+  here are limited to AMD/ROCm build and runtime enablement.
+
+## License
+
+MIT License — see [`LICENSE`](./LICENSE). The MIT terms apply to both the
+upstream code and this port.
